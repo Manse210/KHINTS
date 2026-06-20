@@ -60,54 +60,64 @@ app.post('/notify', express.json(), async (req, res) => {
   }
 });
 
-// Écouter Firestore en temps réel
-db.collection('documents').onSnapshot((snapshot) => {
-  snapshot.docChanges().forEach(async (change) => {
-    const data = change.doc.data();
-    if (!data) return;
+// Vérifier les validations toutes les 5 secondes (polling)
+let lastChecked = new Date();
 
-    console.log('Changement:', change.type, '- isValidated:', data.isValidated);
+async function checkValidations() {
+  try {
+    const now = new Date();
+    const docs = await db.collection('documents')
+      .where('isValidated', '==', true)
+      .get();
 
-    // On détecte la validation : modified avec isValidated = true
-    if (change.type === 'modified' && data.isValidated === true) {
-      const title = data.title || 'Document';
-      const departmentCode = data.departmentCode || '';
+    docs.forEach(async (doc) => {
+      const data = doc.data();
+      const updatedAt = data.updatedAt?.toDate?.() || data.uploadDate || now;
 
-      console.log(`📄 Document validé: "${title}" (${departmentCode})`);
+      if (updatedAt > lastChecked && !data._notified) {
+        const title = data.title || 'Document';
+        const departmentCode = data.departmentCode || '';
 
-      try {
-        const users = await db.collection('users')
-          .where('notificationsEnabled', '==', true)
-          .get();
+        console.log(`📄 Document validé: "${title}" (${departmentCode})`);
 
-        const tokens = [];
-        users.forEach(user => {
-          const token = user.data().fcmToken;
-          if (token) tokens.push(token);
-        });
+        try {
+          const users = await db.collection('users')
+            .where('notificationsEnabled', '==', true)
+            .get();
 
-        if (tokens.length === 0) {
-          console.log('  ⚠️ Aucun utilisateur avec notifications');
-          return;
+          const tokens = [];
+          users.forEach(user => {
+            const token = user.data().fcmToken;
+            if (token) tokens.push(token);
+          });
+
+          if (tokens.length > 0) {
+            const result = await admin.messaging().sendEachForMulticast({
+              tokens,
+              notification: {
+                title: 'Nouveau document validé 📄',
+                body: `"${title}" est maintenant disponible en ${departmentCode}`,
+              },
+            });
+            console.log(`  ✅ ${result.successCount}/${tokens.length} envoyés`);
+          }
+
+          // Marquer comme notifié pour ne pas renvoyer
+          await doc.ref.update({ _notified: true });
+        } catch (error) {
+          console.error('  ❌ Erreur:', error.message);
         }
-
-        const result = await admin.messaging().sendEachForMulticast({
-          tokens,
-          notification: {
-            title: 'Nouveau document validé 📄',
-            body: `"${title}" est maintenant disponible en ${departmentCode}`,
-          },
-        });
-
-        console.log(`  ✅ ${result.successCount}/${tokens.length} envoyés`);
-      } catch (error) {
-        console.error('  ❌ Erreur:', error.message);
       }
-    }
-  });
-}, (error) => {
-  console.error('Erreur Firestore listener:', error);
-});
+    });
+
+    lastChecked = now;
+  } catch (error) {
+    console.error('Erreur polling:', error.message);
+  }
+}
+
+setInterval(checkValidations, 5000);
+console.log('👂 Polling toutes les 5 secondes...');
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
