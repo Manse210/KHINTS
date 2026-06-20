@@ -1,126 +1,67 @@
 const admin = require('firebase-admin');
 const express = require('express');
-const app = express();
 
-// Initialiser Firebase Admin avec la variable d'environnement
-const serviceAccountBase64 = process.env.FIREBASE_SERVICE_ACCOUNT;
-if (serviceAccountBase64) {
-  const serviceAccount = JSON.parse(Buffer.from(serviceAccountBase64, 'base64').toString());
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-  });
-  console.log('✅ Firebase Admin initialisé');
-} else {
-  console.error('❌ Variable FIREBASE_SERVICE_ACCOUNT non définie');
+// Utiliser directement la base64 de la clé de service
+const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
+if (!raw) {
+  console.error('FIREBASE_SERVICE_ACCOUNT manquante');
+  process.exit(1);
+}
+
+try {
+  const sa = JSON.parse(Buffer.from(raw, 'base64').toString());
+  admin.initializeApp({ credential: admin.credential.cert(sa) });
+  console.log('Firebase OK');
+} catch (e) {
+  console.error('Erreur init Firebase:', e.message);
   process.exit(1);
 }
 
 const db = admin.firestore();
+const app = express();
 
-// Endpoint santé
-app.get('/', (req, res) => {
-  res.send('KHINTS+ Notification Service OK');
-});
+app.get('/', (req, res) => res.send('KHINTS+ OK'));
 
-// Endpoint pour envoyer une notification manuellement
 app.post('/notify', express.json(), async (req, res) => {
   const { title, body } = req.body;
-  if (!title || !body) {
-    return res.status(400).json({ error: 'title et body requis' });
-  }
+  if (!title || !body) return res.status(400).json({ error: 'title et body requis' });
 
   try {
-    const users = await db.collection('users')
-      .where('notificationsEnabled', '==', true)
-      .get();
-
+    const users = await db.collection('users').where('notificationsEnabled', '==', true).get();
     const tokens = [];
-    users.forEach(user => {
-      const token = user.data().fcmToken;
-      if (token) tokens.push(token);
-    });
+    users.forEach(u => { const t = u.data().fcmToken; if (t) tokens.push(t); });
+    if (tokens.length === 0) return res.json({ sent: 0 });
 
-    if (tokens.length === 0) {
-      return res.json({ success: true, sent: 0, message: 'Aucun utilisateur avec notifications' });
-    }
-
-    const result = await admin.messaging().sendEachForMulticast({
-      tokens,
-      notification: { title, body },
-    });
-
-    res.json({
-      success: true,
-      sent: result.successCount,
-      total: tokens.length,
-      failures: result.failureCount,
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    const r = await admin.messaging().sendEachForMulticast({ tokens, notification: { title, body } });
+    res.json({ sent: r.successCount, total: tokens.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
-// Vérifier les validations toutes les 5 secondes (polling)
-let lastChecked = new Date();
-
-async function checkValidations() {
+// Polling: vérifier les docs validés non notifiés
+setInterval(async () => {
   try {
-    const now = new Date();
-    const docs = await db.collection('documents')
-      .where('isValidated', '==', true)
-      .get();
-
-    docs.forEach(async (doc) => {
-      const data = doc.data();
-      const updatedAt = data.updatedAt?.toDate?.() || data.uploadDate || now;
-
-      if (updatedAt > lastChecked && !data._notified) {
-        const title = data.title || 'Document';
-        const departmentCode = data.departmentCode || '';
-
-        console.log(`📄 Document validé: "${title}" (${departmentCode})`);
-
-        try {
-          const users = await db.collection('users')
-            .where('notificationsEnabled', '==', true)
-            .get();
-
-          const tokens = [];
-          users.forEach(user => {
-            const token = user.data().fcmToken;
-            if (token) tokens.push(token);
-          });
-
-          if (tokens.length > 0) {
-            const result = await admin.messaging().sendEachForMulticast({
-              tokens,
-              notification: {
-                title: 'Nouveau document validé 📄',
-                body: `"${title}" est maintenant disponible en ${departmentCode}`,
-              },
-            });
-            console.log(`  ✅ ${result.successCount}/${tokens.length} envoyés`);
-          }
-
-          // Marquer comme notifié pour ne pas renvoyer
-          await doc.ref.update({ _notified: true });
-        } catch (error) {
-          console.error('  ❌ Erreur:', error.message);
-        }
+    const docs = await db.collection('documents').where('isValidated', '==', true).where('_notified', '==', false).get();
+    for (const doc of docs.docs) {
+      const d = doc.data();
+      console.log('Nouveau doc validé:', d.title);
+      const users = await db.collection('users').where('notificationsEnabled', '==', true).get();
+      const tokens = [];
+      users.forEach(u => { const t = u.data().fcmToken; if (t) tokens.push(t); });
+      if (tokens.length > 0) {
+        const r = await admin.messaging().sendEachForMulticast({
+          tokens,
+          notification: { title: 'Nouveau document validé 📄', body: `"${d.title}" disponible` },
+        });
+        console.log(`Envoyé à ${r.successCount}/${tokens.length}`);
       }
-    });
-
-    lastChecked = now;
-  } catch (error) {
-    console.error('Erreur polling:', error.message);
+      await doc.ref.update({ _notified: true });
+    }
+  } catch (e) {
+    if (e.code !== 16) console.error('Polling:', e.message);
   }
-}
-
-setInterval(checkValidations, 5000);
-console.log('👂 Polling toutes les 5 secondes...');
+}, 5000);
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 Serveur KHINTS+ démarré sur le port ${PORT}`);
-  console.log('👂 Écoute des validations Firestore...');
-});
+app.listen(PORT, () => console.log(`✅ Serveur sur port ${PORT}`));
