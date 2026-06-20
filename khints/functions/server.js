@@ -64,10 +64,13 @@ app.post('/notify', express.json(), async (req, res) => {
 let listenerReady = false;
 db.collection('documents').onSnapshot((snapshot) => {
   snapshot.docChanges().forEach(async (change) => {
+    console.log('Changement détecté:', change.type, change.doc.id);
     if (change.type !== 'modified') return;
 
     const data = change.after.data();
     const before = change.doc.data();
+
+    console.log('before.isValidated:', before?.isValidated, 'after.isValidated:', data?.isValidated);
 
     if (data.isValidated === true && (!before || before.isValidated !== true)) {
       const title = data.title || 'Document';
