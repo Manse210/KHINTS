@@ -1,7 +1,9 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:http/http.dart' as http;
 import '../theme/app_colors.dart';
 import '../theme/app_theme.dart';
 import '../services/notification_service.dart';
@@ -119,6 +121,29 @@ class _AdminViewState extends State<AdminView>
                                   _isSeeding
                                       ? 'Suppression...'
                                       : 'Supprimer tout & recréer les données test',
+                                  style: GoogleFonts.inter(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600)),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: AppColors.white,
+                                side: BorderSide(
+                                    color: Colors.white.withValues(
+                                        alpha: 0.3)),
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 10),
+                                shape: RoundedRectangleBorder(
+                                    borderRadius:
+                                        BorderRadius.circular(10)),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              onPressed: _showSendNotificationDialog,
+                              icon: const Icon(Icons.notifications, size: 18),
+                              label: Text('Tester notification push',
                                   style: GoogleFonts.inter(
                                       fontSize: 12,
                                       fontWeight: FontWeight.w600)),
@@ -586,6 +611,91 @@ class _AdminViewState extends State<AdminView>
       );
     } finally {
       if (mounted) setState(() => _isSeeding = false);
+    }
+  }
+
+  void _showSendNotificationDialog() {
+    final controller = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Envoyer une notification'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Colle le token d\'accès FCM généré par Gemini CLI'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              maxLines: 3,
+              decoration: const InputDecoration(
+                hintText: 'Access token...',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Annuler')),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _sendTestNotification(controller.text);
+            },
+            child: const Text('Envoyer'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _sendTestNotification(String accessToken) async {
+    if (accessToken.isEmpty) return;
+    try {
+      final users = await FirebaseFirestore.instance
+          .collection('users')
+          .where('notificationsEnabled', isEqualTo: true)
+          .get();
+      final tokens = <String>[];
+      for (final user in users.docs) {
+        final t = user.data()['fcmToken'] as String?;
+        if (t != null && t.isNotEmpty) tokens.add(t);
+      }
+      if (tokens.isEmpty) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Aucun utilisateur avec notifications activées'), backgroundColor: AppColors.warning),
+        );
+        return;
+      }
+
+      final httpClient = http.Client();
+      try {
+        for (final token in tokens) {
+          await httpClient.post(
+            Uri.parse('https://fcm.googleapis.com/v1/projects/khint-1fb73/messages:send'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $accessToken',
+            },
+            body: jsonEncode({
+              'message': {
+                'token': token,
+                'notification': {'title': 'KHINTS+', 'body': 'Test notification depuis l\'admin'},
+              },
+            }),
+          );
+        }
+      } finally {
+        httpClient.close();
+      }
+
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Notification envoyée à ${tokens.length} appareil(s)'), backgroundColor: AppColors.success),
+      );
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erreur: $e'), backgroundColor: AppColors.danger),
+      );
     }
   }
 }
