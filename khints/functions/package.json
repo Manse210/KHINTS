@@ -1,0 +1,16 @@
+{
+  "name": "khints-notifications",
+  "version": "1.0.0",
+  "description": "KHINTS+ - Notification service",
+  "main": "server.js",
+  "engines": {
+    "node": "18"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.22.2",
+    "firebase-admin": "^13.10.0"
+  }
+}
