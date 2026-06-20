@@ -61,18 +61,15 @@ app.post('/notify', express.json(), async (req, res) => {
 });
 
 // Écouter Firestore en temps réel
-let listenerReady = false;
 db.collection('documents').onSnapshot((snapshot) => {
   snapshot.docChanges().forEach(async (change) => {
-    console.log('Changement détecté:', change.type, change.doc.id);
-    if (change.type !== 'modified') return;
+    const data = change.doc.data();
+    if (!data) return;
 
-    const data = change.after.data();
-    const before = change.doc.data();
+    console.log('Changement:', change.type, '- isValidated:', data.isValidated);
 
-    console.log('before.isValidated:', before?.isValidated, 'after.isValidated:', data?.isValidated);
-
-    if (data.isValidated === true && (!before || before.isValidated !== true)) {
+    // On détecte la validation : modified avec isValidated = true
+    if (change.type === 'modified' && data.isValidated === true) {
       const title = data.title || 'Document';
       const departmentCode = data.departmentCode || '';
 
@@ -89,7 +86,10 @@ db.collection('documents').onSnapshot((snapshot) => {
           if (token) tokens.push(token);
         });
 
-        if (tokens.length === 0) return;
+        if (tokens.length === 0) {
+          console.log('  ⚠️ Aucun utilisateur avec notifications');
+          return;
+        }
 
         const result = await admin.messaging().sendEachForMulticast({
           tokens,
