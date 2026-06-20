@@ -23,18 +23,22 @@ const app = express();
 app.get('/', (req, res) => res.send('KHINTS+ OK'));
 
 app.post('/notify', express.json(), async (req, res) => {
-  const { title, body } = req.body;
+  console.log('Requête reçue:', JSON.stringify(req.body));
+  const { title, body } = req.body || {};
   if (!title || !body) return res.status(400).json({ error: 'title et body requis' });
 
   try {
     const users = await db.collection('users').where('notificationsEnabled', '==', true).get();
     const tokens = [];
     users.forEach(u => { const t = u.data().fcmToken; if (t) tokens.push(t); });
+    console.log(`${tokens.length} tokens trouvés`);
     if (tokens.length === 0) return res.json({ sent: 0 });
 
     const r = await admin.messaging().sendEachForMulticast({ tokens, notification: { title, body } });
+    console.log(`Résultat: ${r.successCount}/${tokens.length}`);
     res.json({ sent: r.successCount, total: tokens.length });
   } catch (e) {
+    console.error('Erreur notify:', e);
     res.status(500).json({ error: e.message });
   }
 });
